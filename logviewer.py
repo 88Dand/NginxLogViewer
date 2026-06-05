@@ -103,7 +103,7 @@ def load_full_log():
 html_template = '''<!DOCTYPE html>
 <html>
 <head>
-    <title>🔍 Nginx Log</title>
+    <title>🔍 Nginx Log Analyzer Pro</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
@@ -437,7 +437,7 @@ html_template = '''<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔍 Nginx Live Log </h1>
+            <h1>🔍 Nginx Live Log Analyzer Pro</h1>
             <div class="file-info">
                 <span>📁 {log_file}</span>
                 <span class="file-stats" id="total-file-entries">Загрузка...</span>
