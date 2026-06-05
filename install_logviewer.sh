@@ -9,8 +9,8 @@ SCRIPT_PATH="${INSTALL_DIR}/${SCRIPT_NAME}"
 LOG_PATH_DEFAULT="/var/www/api/nginx-logs/site.access.log"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/88Dand/NginxLogViewer/main/logviewer.py"
 PORT=8080
-VERSION="2.0"
- 
+VERSION="2.1"
+
 # === Цветной вывод ===
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -32,34 +32,13 @@ print_header() {
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 }
 
-# === Проверка зависимостей ===
-check_dependencies() {
-    print_info "Проверка зависимостей..."
-    
-    if ! command -v python3 &> /dev/null; then
-        print_error "Python3 не установлен"
-        exit 1
-    fi
-    print_success "Python3: $(python3 --version)"
-    
-    if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
-        print_error "curl или wget не установлены"
-        exit 1
-    fi
-    print_success "curl/wget установлены"
-    
-    echo ""
-}
-
 # === Очистка старых файлов ===
 clean_old_files() {
     print_info "Очистка старых файлов..."
-    
     systemctl stop "${SERVICE_NAME}" 2>/dev/null
     rm -f "${SCRIPT_PATH}"
     rm -rf "${INSTALL_DIR}/__pycache__"
     find "${INSTALL_DIR}" -name "*.pyc" -delete 2>/dev/null
-    
     print_success "Очистка завершена"
 }
 
@@ -74,7 +53,7 @@ download_from_github() {
     fi
     
     if [ -f "${SCRIPT_PATH}" ] && [ -s "${SCRIPT_PATH}" ]; then
-        local size=$(stat -c%s "${SCRIPT_PATH}")
+        local size=$(stat -c%s "${SCRIPT_PATH}" 2>/dev/null || stat -f%z "${SCRIPT_PATH}" 2>/dev/null)
         print_success "Скачано ${size} байт"
         return 0
     else
@@ -127,28 +106,45 @@ install_and_start() {
 # === Показать статус ===
 show_status() {
     print_header "СТАТУС СЕРВИСА"
-    systemctl status "${SERVICE_NAME}" --no-pager | head -n 15
+    if systemctl is-active --quiet "${SERVICE_NAME}"; then
+        print_success "Сервис активен"
+    else
+        print_error "Сервис не активен"
+    fi
     echo ""
-    ss -tlnp | grep ":${PORT}" 2>/dev/null || echo "Порт ${PORT} не слушается"
+    systemctl status "${SERVICE_NAME}" --no-pager 2>/dev/null | head -n 15
+    echo ""
+    if ss -tlnp 2>/dev/null | grep -q ":${PORT}"; then
+        print_success "Порт ${PORT} слушается"
+        ss -tlnp 2>/dev/null | grep ":${PORT}"
+    else
+        print_warning "Порт ${PORT} не слушается"
+    fi
 }
 
 # === Логи ===
 show_logs() {
-    print_header "ЛОГИ (Ctrl+C для выхода)"
+    print_header "ЛОГИ В РЕАЛЬНОМ ВРЕМЕНИ"
+    print_info "Нажмите Ctrl+C для выхода"
+    echo ""
     journalctl -u "${SERVICE_NAME}" -f
 }
 
 # === Перезапуск ===
 restart_service() {
-    print_info "Перезапуск..."
+    print_info "Перезапуск сервиса..."
     systemctl restart "${SERVICE_NAME}"
     sleep 2
-    show_status
+    if systemctl is-active --quiet "${SERVICE_NAME}"; then
+        print_success "Сервис перезапущен"
+    else
+        print_error "Ошибка перезапуска"
+    fi
 }
 
 # === Остановка ===
 stop_service() {
-    print_info "Остановка..."
+    print_info "Остановка сервиса..."
     systemctl stop "${SERVICE_NAME}"
     print_success "Сервис остановлен"
 }
@@ -156,8 +152,12 @@ stop_service() {
 # === Удаление ===
 full_uninstall() {
     print_header "ПОЛНОЕ УДАЛЕНИЕ"
-    read -p "Вы уверены? (y/N): " confirm
-    [[ ! "$confirm" =~ ^[Yy]$ ]] && return
+    echo -n -e "${YELLOW}Вы уверены? (y/N): ${NC}"
+    read -r confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        print_info "Отмена"
+        return
+    fi
     
     systemctl stop "${SERVICE_NAME}" 2>/dev/null
     systemctl disable "${SERVICE_NAME}" 2>/dev/null
@@ -172,30 +172,63 @@ full_uninstall() {
 # === Полная установка ===
 full_install() {
     print_header "ПОЛНАЯ УСТАНОВКА"
-    check_dependencies
-    clean_old_files
-    download_from_github || exit 1
-    create_systemd_service
-    install_and_start || exit 1
     
-    LOCAL_IP=$(hostname -I | awk '{print $1}')
-    [[ -z "${LOCAL_IP}" ]] && LOCAL_IP=$(curl -s ifconfig.me 2>/dev/null)
+    # Проверяем зависимости
+    if ! command -v python3 &> /dev/null; then
+        print_error "Python3 не установлен"
+        return 1
+    fi
+    print_success "Python3: $(python3 --version)"
+    
+    if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
+        print_error "curl или wget не установлены"
+        return 1
+    fi
+    print_success "curl/wget установлены"
+    
+    clean_old_files
+    download_from_github || return 1
+    
+    # Проверяем, что файл скачался
+    if [ ! -s "${SCRIPT_PATH}" ]; then
+        print_error "Скрипт пустой или не скачался"
+        return 1
+    fi
+    
+    create_systemd_service
+    install_and_start || return 1
+    
+    # Получаем IP
+    LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+    if [ -z "${LOCAL_IP}" ]; then
+        LOCAL_IP=$(curl -s ifconfig.me 2>/dev/null)
+    fi
     
     echo ""
     print_success "УСТАНОВКА ЗАВЕРШЕНА!"
-    echo -e "${GREEN}🔗 Доступ: http://${LOCAL_IP}:${PORT}${NC}"
-    echo -e "   Локально: http://127.0.0.1:${PORT}"
+    echo ""
+    echo -e "${GREEN}🔗 ДОСТУП:${NC}"
+    echo -e "   Локально:  ${BLUE}http://127.0.0.1:${PORT}${NC}"
+    echo -e "   По сети:   ${BLUE}http://${LOCAL_IP}:${PORT}${NC}"
+    echo ""
 }
 
 # === Обновление скрипта ===
 update_script() {
-    print_header "ОБНОВЛЕНИЕ"
+    print_header "ОБНОВЛЕНИЕ СКРИПТА"
+    
     systemctl stop "${SERVICE_NAME}" 2>/dev/null
     rm -f "${SCRIPT_PATH}"
-    download_from_github || exit 1
+    download_from_github || return 1
     systemctl start "${SERVICE_NAME}"
     sleep 2
-    systemctl is-active --quiet "${SERVICE_NAME}" && print_success "Обновлено" || print_error "Ошибка"
+    
+    if systemctl is-active --quiet "${SERVICE_NAME}"; then
+        print_success "Скрипт обновлён, сервис перезапущен"
+    else
+        print_error "Сервис не запустился"
+        journalctl -u "${SERVICE_NAME}" -n 20 --no-pager
+    fi
 }
 
 # === Меню ===
@@ -217,38 +250,52 @@ show_menu() {
     echo -n -e "${BLUE}Выберите действие [0-8]: ${NC}"
 }
 
-# === Главный цикл ===
-main() {
-    case "$1" in
-        install) full_install ;;
-        update) update_script ;;
-        status) show_status ;;
-        logs) show_logs ;;
-        restart) restart_service ;;
-        stop) stop_service ;;
-        uninstall) full_uninstall ;;
-        *)
-            while true; do
-                show_menu
-                read -r choice
-                echo ""
-                case $choice in
-                    1) full_install ;;
-                    2) update_script ;;
-                    3) show_status ;;
-                    4) show_logs ;;
-                    5) restart_service ;;
-                    6) stop_service ;;
-                    7) clean_old_files ;;
-                    8) full_uninstall ;;
-                    0) print_info "До свидания!"; exit 0 ;;
-                    *) print_error "Неверный выбор" ;;
-                esac
-                echo ""
-                read -p "Нажмите Enter для продолжения..."
-            done
-            ;;
-    esac
+# === Пауза после выполнения ===
+pause() {
+    echo ""
+    echo -n "Нажмите Enter для продолжения..."
+    read -r
 }
 
+# === Главный цикл ===
+main() {
+    # Если есть аргумент командной строки
+    case "$1" in
+        install) full_install; exit 0 ;;
+        update) update_script; exit 0 ;;
+        status) show_status; exit 0 ;;
+        logs) show_logs; exit 0 ;;
+        restart) restart_service; exit 0 ;;
+        stop) stop_service; exit 0 ;;
+        uninstall) full_uninstall; exit 0 ;;
+    esac
+    
+    # Интерактивный режим
+    while true; do
+        show_menu
+        read -r choice
+        
+        case "$choice" in
+            1) full_install; pause ;;
+            2) update_script; pause ;;
+            3) show_status; pause ;;
+            4) show_logs ;;  # Без паузы, так как это интерактивный режим
+            5) restart_service; pause ;;
+            6) stop_service; pause ;;
+            7) clean_old_files; pause ;;
+            8) full_uninstall; pause ;;
+            0) 
+                echo ""
+                print_info "До свидания!"
+                exit 0
+                ;;
+            *)
+                print_error "Неверный выбор. Пожалуйста, введите число от 0 до 8"
+                sleep 1.5
+                ;;
+        esac
+    done
+}
+
+# === Запуск ===
 main "$1"
