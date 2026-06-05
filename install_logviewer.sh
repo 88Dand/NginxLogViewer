@@ -10,7 +10,7 @@ LOG_PATH_DEFAULT="/var/www/api/nginx-logs/site.access.log"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/88Dand/NginxLogViewer/main/logviewer.py"
 PORT=8080
 VERSION="2.4"
-
+ 
 # === Перенаправляем stdin на терминал (один раз) ===
 # Это нужно, чтобы скрипт мог читать ввод при запуске через curl | bash
 if [ ! -t 0 ]; then
