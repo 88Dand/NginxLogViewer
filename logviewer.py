@@ -1,46 +1,49 @@
+#!/usr/bin/env python3
 import os
 import socket
 import subprocess
 import threading
 import sys
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 import re
-from collections import Counter
 
 log_file = sys.argv[1] if len(sys.argv) > 1 else '/var/www/api/nginx-logs/site.access.log'
 port = 8080
 
-# Хранилище последних логов
-log_history = []
-max_history = 10000  # Увеличим для всего файла
-
 def parse_log_line(line):
-    """Парсит строку лога Nginx в структурированный объект"""
-    # Формат combined: $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"
     pattern = r'(\S+) \S+ \S+ \[([^\]]+)\] "(\S+) (\S+) [^"]+" (\d+) (\d+) "([^"]*)" "([^"]*)"'
     match = re.search(pattern, line)
-    
     if match:
         ip, timestamp, method, url, status, size, referer, agent = match.groups()
-        
-        # Конвертируем timestamp в datetime объект
         try:
-            # Формат: 11/Feb/2026:13:43:22 +0000
             dt = datetime.strptime(timestamp.split(' ')[0], '%d/%b/%Y:%H:%M:%S')
-            formatted_time = dt.strftime('%d.%m.%Y %H:%M')
+            formatted_time = dt.strftime('%d.%m.%Y %H:%M:%S')
             sort_time = dt.timestamp()
+            full_date = dt.strftime('%d.%m.%Y')
+            full_time = dt.strftime('%H:%M:%S')
         except:
             formatted_time = timestamp
             sort_time = 0
+            full_date = ''
+            full_time = ''
+        
+        # Парсим URL и параметры
+        url_parts = url.split('?')
+        url_path = url_parts[0]
+        url_params = url_parts[1] if len(url_parts) > 1 else ''
         
         return {
             'raw': line,
             'ip': ip,
             'timestamp': formatted_time,
+            'full_date': full_date,
+            'full_time': full_time,
             'sort_time': sort_time,
             'method': method,
             'url': url,
+            'url_path': url_path,
+            'url_params': url_params,
             'status': int(status),
             'size': size,
             'referer': referer,
@@ -60,128 +63,99 @@ def get_status_color(status):
         return 'color: #69db7e; background: #1a2c1a;'
 
 def collect_status_codes():
-    """Собирает все уникальные статусы из всего лог-файла"""
     statuses = set()
     try:
         with open(log_file, 'r') as f:
-            # Читаем файл построчно для экономии памяти
             for line in f:
-                match = re.search(r'" (\d{3}) ', line)
-                if match:
-                    statuses.add(int(match.group(1)))
-    except Exception as e:
-        print(f"Ошибка при сборе статусов: {e}")
-    
-    # Добавляем самые частые статусы на всякий случай
-    common_statuses = [200, 201, 301, 302, 304, 400, 401, 403, 404, 405, 429, 500, 502, 503, 504]
-    for status in common_statuses:
-        statuses.add(status)
-    
+                m = re.search(r'" (\d{3}) ', line)
+                if m:
+                    statuses.add(int(m.group(1)))
+    except:
+        pass
+    for s in [200, 201, 301, 302, 304, 400, 401, 403, 404, 405, 429, 500, 502, 503, 504]:
+        statuses.add(s)
     return sorted(statuses)
 
 def load_full_log():
-    """Загружает ВЕСЬ лог-файл с пагинацией"""
     logs = []
     try:
         with open(log_file, 'r') as f:
-            # Читаем весь файл
             lines = f.readlines()
-            print(f"📚 Загружено {len(lines)} строк из лог-файла")
-            
-            # Парсим все строки с конца (новые сверху)
+            print(f"📚 Загружено {len(lines)} строк")
             for line in reversed(lines):
-                parsed = parse_log_line(line)
-                if parsed:
-                    logs.append(parsed)
-                    if len(logs) >= max_history:
+                p = parse_log_line(line)
+                if p:
+                    logs.append(p)
+                    if len(logs) >= 10000:
                         break
     except Exception as e:
-        print(f"Ошибка при загрузке лога: {e}")
-    
+        print(f"Ошибка загрузки: {e}")
     return logs
 
+# HTML с модальным окном
 html_template = '''<!DOCTYPE html>
 <html>
 <head>
-    <title>🔍 Nginx Log</title>
+    <title>🔍 Nginx Log Analyzer Pro</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        * {{
-            box-sizing: border-box;
-        }}
-        body {{
+        * { box-sizing: border-box; }
+        body {
             background: #0a0e14;
             color: #e6e6e6;
             font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
             margin: 0;
             padding: 20px;
             font-size: 13px;
-        }}
-        
-        .container {{
-            max-width: 2000px;
-            margin: 0 auto;
-        }}
-        
-        .header {{
+        }
+        .container { max-width: 2000px; margin: 0 auto; }
+        .header {
             background: #1a1f2a;
             padding: 20px;
             border-radius: 12px;
             margin-bottom: 20px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
             border: 1px solid #2c313a;
-        }}
-        
-        h1 {{
+        }
+        h1 {
             margin: 0 0 20px 0;
             font-size: 24px;
             display: flex;
             align-items: center;
             gap: 10px;
             color: #a9b1d6;
-        }}
-        
-        .file-info {{
+        }
+        .file-info {
             background: #0f1319;
             padding: 10px 15px;
             border-radius: 8px;
             font-size: 14px;
             margin-bottom: 20px;
             border-left: 4px solid #7aa2f7;
-            word-break: break-all;
             display: flex;
             justify-content: space-between;
             align-items: center;
-        }}
-        
-        .file-stats {{
-            color: #7aa2f7;
-            font-weight: bold;
-        }}
-        
-        .filters {{
+        }
+        .filters {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 15px;
             margin-bottom: 20px;
-        }}
-        
-        .filter-group {{
+        }
+        .filter-group {
             display: flex;
             flex-direction: column;
             gap: 5px;
-        }}
-        
-        .filter-group label {{
+        }
+        .filter-group label {
             font-size: 11px;
             text-transform: uppercase;
             letter-spacing: 1px;
             color: #7aa2f7;
             font-weight: bold;
-        }}
-        
-        input, select {{
+        }
+        input, select {
             background: #0f1319;
             border: 1px solid #2c313a;
             color: #e6e6e6;
@@ -189,53 +163,40 @@ html_template = '''<!DOCTYPE html>
             border-radius: 6px;
             font-family: inherit;
             font-size: 13px;
-            transition: all 0.2s;
-        }}
-        
-        input:hover, select:hover {{
-            border-color: #7aa2f7;
-        }}
-        
-        input:focus, select:focus {{
+        }
+        input:focus, select:focus {
             outline: none;
             border-color: #7aa2f7;
-            box-shadow: 0 0 0 3px rgba(122,162,247,0.1);
-        }}
-        
-        .stats {{
+        }
+        .stats {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 15px;
             margin-bottom: 20px;
-        }}
-        
-        .stat-card {{
+        }
+        .stat-card {
             background: #0f1319;
             padding: 15px;
             border-radius: 8px;
             border: 1px solid #2c313a;
-        }}
-        
-        .stat-value {{
+        }
+        .stat-value {
             font-size: 24px;
             font-weight: bold;
             color: #7aa2f7;
-        }}
-        
-        .stat-label {{
+        }
+        .stat-label {
             font-size: 11px;
             color: #88909f;
             text-transform: uppercase;
-        }}
-        
-        .controls {{
+        }
+        .controls {
             display: flex;
             gap: 10px;
             margin-bottom: 20px;
             flex-wrap: wrap;
-        }}
-        
-        .button {{
+        }
+        .button {
             background: #1f2430;
             border: 1px solid #2c313a;
             color: #e6e6e6;
@@ -247,50 +208,35 @@ html_template = '''<!DOCTYPE html>
             align-items: center;
             gap: 8px;
             transition: all 0.2s;
-            border: none;
-        }}
-        
-        .button:hover {{
+        }
+        .button:hover {
             background: #2c313a;
             border-color: #7aa2f7;
-        }}
-        
-        .button.primary {{
+        }
+        .button.primary {
             background: #7aa2f7;
             color: #0a0e14;
-        }}
-        
-        .button.primary:hover {{
-            background: #88b4ff;
-        }}
-        
-        .pagination {{
+        }
+        .pagination {
             display: flex;
             justify-content: space-between;
             align-items: center;
             padding: 15px 20px;
             background: #1a1f2a;
             border-bottom: 1px solid #2c313a;
-        }}
-        
-        .pagination-info {{
-            color: #88909f;
-        }}
-        
-        .pagination-controls {{
+        }
+        .pagination-controls {
             display: flex;
             gap: 10px;
             align-items: center;
-        }}
-        
-        .log-container {{
+        }
+        .log-container {
             background: #0f1319;
             border-radius: 12px;
             border: 1px solid #2c313a;
             overflow: hidden;
-        }}
-        
-        .log-header {{
+        }
+        .log-header {
             display: grid;
             grid-template-columns: 150px 180px 70px 1fr 70px 100px;
             background: #1a1f2a;
@@ -299,107 +245,171 @@ html_template = '''<!DOCTYPE html>
             color: #a9b1d6;
             border-bottom: 1px solid #2c313a;
             cursor: pointer;
-        }}
-        
-        .log-header span:hover {{
-            color: #7aa2f7;
-        }}
-        
-        .log-entries {{
+        }
+        .log-header span:hover { color: #7aa2f7; }
+        .log-entries {
             height: 60vh;
             overflow-y: auto;
-            padding: 0;
-            margin: 0;
-            font-family: inherit;
-            background: #0f1319;
-        }}
-        
-        .log-line {{
+        }
+        .log-line {
             display: grid;
             grid-template-columns: 150px 180px 70px 1fr 70px 100px;
             padding: 8px 20px;
             border-bottom: 1px solid #1a1f2a;
             font-size: 12px;
+            cursor: pointer;
             transition: background 0.2s;
-            word-break: break-word;
-        }}
-        
-        .log-line:hover {{
+        }
+        .log-line:hover {
             background: #1a1f2a;
-        }}
-        
-        .status-badge {{
+            transform: scale(1.01);
+        }
+        .status-badge {
             padding: 2px 8px;
             border-radius: 4px;
             font-weight: bold;
             display: inline-block;
             text-align: center;
             width: 100%;
-        }}
-        
-        .method-badge {{
+        }
+        .method-badge {
             padding: 2px 8px;
             border-radius: 4px;
             background: #2c313a;
-            color: #e6e6e6;
-            font-weight: bold;
-            display: inline-block;
             text-align: center;
             width: 100%;
-        }}
-        
-        .ip-address {{
+            display: inline-block;
+        }
+        .ip-address {
             color: #7aa2f7;
             font-family: monospace;
             font-weight: bold;
-        }}
+        }
+        .error-404 { background: rgba(255, 217, 61, 0.1); }
+        .error-500 { background: rgba(255, 107, 107, 0.1); }
         
-        .error-404 {{
-            background: rgba(255, 217, 61, 0.1);
-        }}
-        
-        .error-500 {{
-            background: rgba(255, 107, 107, 0.1);
-        }}
-        
-        .footer {{
+        /* Модальное окно */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.8);
+            animation: fadeIn 0.3s;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        .modal-content {
+            background: #1a1f2a;
+            margin: 5% auto;
+            padding: 0;
+            width: 90%;
+            max-width: 900px;
+            border-radius: 16px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+            animation: slideIn 0.3s;
+        }
+        @keyframes slideIn {
+            from { transform: translateY(-50px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        .modal-header {
+            padding: 20px 25px;
+            background: #0f1319;
+            border-bottom: 2px solid #7aa2f7;
+            border-radius: 16px 16px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-header h2 {
+            margin: 0;
+            color: #7aa2f7;
+            font-size: 20px;
+        }
+        .close {
+            color: #88909f;
+            font-size: 32px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: 0.2s;
+            line-height: 1;
+        }
+        .close:hover {
+            color: #ff6b6b;
+            transform: scale(1.1);
+        }
+        .modal-body {
+            padding: 25px;
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+        .detail-section {
+            margin-bottom: 20px;
+            background: #0f1319;
+            border-radius: 8px;
+            padding: 15px;
+            border-left: 3px solid #7aa2f7;
+        }
+        .detail-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #7aa2f7;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+        .detail-value {
+            font-family: monospace;
+            font-size: 13px;
+            word-break: break-all;
+            color: #e6e6e6;
+            line-height: 1.5;
+        }
+        .detail-value pre {
+            background: #0a0e14;
+            padding: 12px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 8px 0 0 0;
+            font-size: 12px;
+        }
+        .filter-ip-btn {
+            background: #2c313a;
+            border: none;
+            color: #7aa2f7;
+            padding: 4px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            margin-left: 10px;
+        }
+        .filter-ip-btn:hover {
+            background: #7aa2f7;
+            color: #0a0e14;
+        }
+        .footer {
             margin-top: 20px;
             text-align: center;
             color: #88909f;
             font-size: 11px;
-        }}
-        
-        ::-webkit-scrollbar {{
-            width: 8px;
-            height: 8px;
-        }}
-        
-        ::-webkit-scrollbar-track {{
-            background: #0f1319;
-        }}
-        
-        ::-webkit-scrollbar-thumb {{
-            background: #2c313a;
-            border-radius: 4px;
-        }}
-        
-        ::-webkit-scrollbar-thumb:hover {{
-            background: #7aa2f7;
-        }}
-        
-        .time-range {{
+        }
+        .time-range {
             display: flex;
             flex-direction: column;
             gap: 10px;
-        }}
-        
-        .time-presets {{
+        }
+        .time-presets {
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
-        }}
-        
-        .time-preset-btn {{
+        }
+        .time-preset-btn {
             background: #1f2430;
             border: 1px solid #2c313a;
             color: #e6e6e6;
@@ -407,50 +417,40 @@ html_template = '''<!DOCTYPE html>
             border-radius: 4px;
             cursor: pointer;
             font-size: 12px;
-            transition: all 0.2s;
-        }}
-        
-        .time-preset-btn:hover {{
+        }
+        .time-preset-btn:hover {
             background: #2c313a;
             border-color: #7aa2f7;
-        }}
-        
-        .time-preset-btn.active {{
+        }
+        .time-preset-btn.active {
             background: #7aa2f7;
             color: #0a0e14;
-            border-color: #7aa2f7;
-        }}
-        
-        .custom-time-range {{
+        }
+        .custom-time-range {
             display: grid;
             grid-template-columns: 1fr 1fr auto auto;
             gap: 10px;
             align-items: center;
-        }}
-        
-        .total-entries {{
-            color: #7aa2f7;
-            font-weight: bold;
-        }}
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔍 Nginx Live Log </h1>
+            <h1>🔍 Nginx Live Log Analyzer Pro</h1>
             <div class="file-info">
                 <span>📁 {log_file}</span>
                 <span class="file-stats" id="total-file-entries">Загрузка...</span>
             </div>
             
-            <div class="stats" id="stats">
+            <div class="stats">
                 <div class="stat-card">
                     <div class="stat-value" id="total-count">0</div>
                     <div class="stat-label">Отфильтровано</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-value" id="error-count">0</div>
-                    <div class="stat-label">Ошибки (4xx/5xx)</div>
+                    <div class="stat-label">Ошибки</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-value" id="unique-ips">0</div>
@@ -458,27 +458,25 @@ html_template = '''<!DOCTYPE html>
                 </div>
                 <div class="stat-card">
                     <div class="stat-value" id="time-range-stats">-</div>
-                    <div class="stat-label">Временной диапазон</div>
+                    <div class="stat-label">Диапазон</div>
                 </div>
             </div>
             
             <div class="filters">
                 <div class="filter-group">
                     <label>🌐 Фильтр по IP</label>
-                    <input type="text" id="filter-ip" placeholder="например: 192.168.1.1" autocomplete="off">
+                    <input type="text" id="filter-ip" placeholder="192.168.1.1">
                 </div>
-                
                 <div class="filter-group">
                     <label>📊 Фильтр по статусу</label>
                     <select id="filter-status">
                         <option value="">Все статусы</option>
-                        <option value="4xx">4xx (все ошибки клиента)</option>
-                        <option value="5xx">5xx (все ошибки сервера)</option>
+                        <option value="4xx">4xx (ошибки клиента)</option>
+                        <option value="5xx">5xx (ошибки сервера)</option>
                         <option disabled>──────────</option>
                         {status_options}
                     </select>
                 </div>
-                
                 <div class="filter-group">
                     <label>🔧 Фильтр по методу</label>
                     <select id="filter-method">
@@ -487,39 +485,28 @@ html_template = '''<!DOCTYPE html>
                         <option value="POST">POST</option>
                         <option value="PUT">PUT</option>
                         <option value="DELETE">DELETE</option>
-                        <option value="PATCH">PATCH</option>
-                        <option value="HEAD">HEAD</option>
-                        <option value="OPTIONS">OPTIONS</option>
                     </select>
                 </div>
-                
                 <div class="filter-group">
                     <label>🔍 Поиск в URL</label>
-                    <input type="text" id="filter-url" placeholder="текст в URL..." autocomplete="off">
+                    <input type="text" id="filter-url" placeholder="текст в URL...">
                 </div>
-                
                 <div class="filter-group">
                     <label>⏰ Временной диапазон</label>
                     <div class="time-range">
-                        <div class="time-presets" id="time-presets">
+                        <div class="time-presets">
                             <button class="time-preset-btn" data-minutes="5">5 мин</button>
-                            <button class="time-preset-btn" data-minutes="10">10 мин</button>
                             <button class="time-preset-btn" data-minutes="30">30 мин</button>
                             <button class="time-preset-btn" data-minutes="60">1 час</button>
-                            <button class="time-preset-btn" data-minutes="180">3 часа</button>
-                            <button class="time-preset-btn" data-minutes="360">6 часов</button>
-                            <button class="time-preset-btn" data-minutes="720">12 часов</button>
-                            <button class="time-preset-btn" data-minutes="1440">24 часа</button>
-                            <button class="time-preset-btn" data-minutes="4320">3 дня</button>
-                            <button class="time-preset-btn" data-minutes="10080">7 дней</button>
+                            <button class="time-preset-btn" data-minutes="360">6 час</button>
+                            <button class="time-preset-btn" data-minutes="1440">24 час</button>
                             <button class="time-preset-btn" id="custom-time-btn">📅 Свой</button>
                         </div>
                         <div id="custom-time-picker" style="display: none;">
                             <div class="custom-time-range">
-                                <input type="datetime-local" id="start-time" placeholder="Начало">
-                                <input type="datetime-local" id="end-time" placeholder="Конец">
-                                <button class="button" onclick="applyCustomTimeRange()">Применить</button>
-                                <button class="button" onclick="clearCustomTimeRange()">Очистить</button>
+                                <input type="datetime-local" id="start-time">
+                                <input type="datetime-local" id="end-time">
+                                <button class="button" onclick="applyCustomTime()">Применить</button>
                             </div>
                         </div>
                     </div>
@@ -531,13 +518,10 @@ html_template = '''<!DOCTYPE html>
                     <span id="pause-icon">⏸️</span> <span id="pause-text">Пауза</span>
                 </button>
                 <button class="button" onclick="loadFullLog()">
-                    📂 Загрузить весь лог
+                    📂 Загрузить лог
                 </button>
                 <button class="button" onclick="clearFilters()">
-                    🧹 Очистить фильтры
-                </button>
-                <button class="button" onclick="copyVisible()">
-                    📋 Копировать видимые
+                    🧹 Очистить
                 </button>
                 <button class="button primary" onclick="exportFiltered()">
                     💾 Экспорт CSV
@@ -549,42 +533,46 @@ html_template = '''<!DOCTYPE html>
             <div class="pagination">
                 <div class="pagination-info">
                     <span id="showing-entries">Показано 0-0 из 0</span>
-                    <span style="margin-left: 15px;" id="filtered-percent"></span>
                 </div>
                 <div class="pagination-controls">
-                    <button class="button" onclick="firstPage()" id="first-btn" title="Первая страница">⏮️</button>
                     <button class="button" onclick="prevPage()" id="prev-btn" disabled>←</button>
-                    <span style="padding: 0 15px; color: #a9b1d6;" id="page-info">1/1</span>
+                    <span style="padding: 0 15px;" id="page-info">1/1</span>
                     <button class="button" onclick="nextPage()" id="next-btn" disabled>→</button>
-                    <button class="button" onclick="lastPage()" id="last-btn" title="Последняя страница">⏭️</button>
-                    <select id="page-size" style="width: 80px;">
+                    <select id="page-size">
                         <option value="50">50</option>
                         <option value="100" selected>100</option>
                         <option value="200">200</option>
                         <option value="500">500</option>
-                        <option value="1000">1000</option>
                     </select>
                 </div>
             </div>
             <div class="log-header">
-                <span onclick="sortBy('sort_time')">⏰ Дата и время ⬇️</span>
+                <span onclick="sortBy('sort_time')">⏰ Дата и время</span>
                 <span onclick="sortBy('ip')">🌐 IP адрес</span>
                 <span onclick="sortBy('method')">🔧 Метод</span>
                 <span onclick="sortBy('url')">📌 URL</span>
                 <span onclick="sortBy('status')">📊 Статус</span>
                 <span onclick="sortBy('size')">📦 Размер</span>
             </div>
-            <div id="log-entries" class="log-entries">
-                <div style="padding: 40px; text-align: center; color: #88909f;">
-                    🔄 Загрузка лог-файла...
-                </div>
-            </div>
+            <div id="log-entries" class="log-entries"></div>
         </div>
         
         <div class="footer">
-            ⚡ Real-time Nginx лог-анализатор | 
-            Обновлено: <span id="update-time"></span> | 
-            Всего записей в файле: <span id="total-file-count">0</span>
+            ⚡ Real-time лог-анализатор | Обновлено: <span id="update-time"></span>
+            <br>💡 Кликните по любой строке для просмотра деталей запроса
+        </div>
+    </div>
+
+    <!-- Модальное окно -->
+    <div id="detailModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📋 Детали запроса</h2>
+                <span class="close" onclick="closeModal()">&times;</span>
+            </div>
+            <div class="modal-body" id="modal-body">
+                <!-- Данные будут вставлены здесь -->
+            </div>
         </div>
     </div>
 
@@ -594,345 +582,275 @@ html_template = '''<!DOCTYPE html>
         let isPaused = false;
         let sortField = 'sort_time';
         let sortDirection = 'desc';
-        
-        // Пагинация
         let currentPage = 1;
         let pageSize = 100;
-        
-        // Временные фильтры
         let startTimeFilter = null;
         let endTimeFilter = null;
-        let activePreset = null;
         
-        const logContainer = document.getElementById('log-entries');
+        function formatTime(timestamp) { return timestamp || ''; }
         
-        function formatTime(timestamp) {{
-            return timestamp || '';
-        }}
+        function showDetails(log) {
+            const modal = document.getElementById('detailModal');
+            const modalBody = document.getElementById('modal-body');
+            
+            const userAgentShort = log.agent.length > 100 ? log.agent.substring(0, 100) + '...' : log.agent;
+            
+            modalBody.innerHTML = `
+                <div class="detail-section">
+                    <div class="detail-label">🌐 IP АДРЕС</div>
+                    <div class="detail-value">
+                        <strong style="color:#7aa2f7;">${log.ip}</strong>
+                        <button class="filter-ip-btn" onclick="filterByIP('${log.ip}'); closeModal();">🔍 Фильтровать по этому IP</button>
+                    </div>
+                </div>
+                
+                <div class="detail-section">
+                    <div class="detail-label">⏰ ВРЕМЯ ЗАПРОСА</div>
+                    <div class="detail-value">${log.full_date || log.timestamp} ${log.full_time ? 'в ' + log.full_time : ''}</div>
+                </div>
+                
+                <div class="detail-section">
+                    <div class="detail-label">🔧 МЕТОД И СТАТУС</div>
+                    <div class="detail-value">
+                        <span class="method-badge" style="display: inline-block; width: auto; margin-right: 10px;">${log.method}</span>
+                        <span class="status-badge" style="${log.color} display: inline-block; width: auto;">${log.status}</span>
+                    </div>
+                </div>
+                
+                <div class="detail-section">
+                    <div class="detail-label">📌 URL (ПОЛНЫЙ ПУТЬ)</div>
+                    <div class="detail-value">
+                        <strong>Путь:</strong> ${log.url_path || log.url}
+                        ${log.url_params ? `<div style="margin-top: 10px;"><strong>Параметры:</strong><pre>${log.url_params.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</pre></div>` : ''}
+                    </div>
+                </div>
+                
+                <div class="detail-section">
+                    <div class="detail-label">📦 РАЗМЕР ОТВЕТА</div>
+                    <div class="detail-value">${log.size} байт (${(log.size/1024).toFixed(2)} KB)</div>
+                </div>
+                
+                <div class="detail-section">
+                    <div class="detail-label">🔗 REFERER (ОТКУДА ПРИШЛИ)</div>
+                    <div class="detail-value">${log.referer || '<em style="color:#88909f;">— прямой переход или не указан —</em>'}</div>
+                </div>
+                
+                <div class="detail-section">
+                    <div class="detail-label">💻 USER-AGENT (БРАУЗЕР/УСТРОЙСТВО)</div>
+                    <div class="detail-value">
+                        <details>
+                            <summary style="cursor: pointer; color:#7aa2f7;">${userAgentShort}</summary>
+                            <pre style="margin-top: 10px;">${log.agent}</pre>
+                        </details>
+                    </div>
+                </div>
+                
+                <div class="detail-section">
+                    <div class="detail-label">📄 ПОЛНАЯ СТРОКА ЛОГА</div>
+                    <div class="detail-value">
+                        <pre style="font-size: 11px; overflow-x: auto;">${log.raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+                    </div>
+                </div>
+            `;
+            
+            modal.style.display = 'block';
+        }
         
-        function applyFilters() {{
+        function filterByIP(ip) {
+            document.getElementById('filter-ip').value = ip;
+            applyFilters();
+        }
+        
+        function closeModal() {
+            document.getElementById('detailModal').style.display = 'none';
+        }
+        
+        window.onclick = function(event) {
+            const modal = document.getElementById('detailModal');
+            if (event.target === modal) {
+                closeModal();
+            }
+        }
+        
+        function applyFilters() {
             const ipFilter = document.getElementById('filter-ip').value.toLowerCase();
             const statusFilter = document.getElementById('filter-status').value;
             const methodFilter = document.getElementById('filter-method').value;
             const urlFilter = document.getElementById('filter-url').value.toLowerCase();
             
-            filteredLogs = logs.filter(log => {{
+            filteredLogs = logs.filter(log => {
                 if (!log) return false;
-                
-                // IP фильтр
                 if (ipFilter && !log.ip.toLowerCase().includes(ipFilter)) return false;
-                
-                // Статус фильтр
-                if (statusFilter) {{
+                if (statusFilter) {
                     if (statusFilter === '4xx' && (log.status < 400 || log.status >= 500)) return false;
-                    else if (statusFilter === '5xx' && (log.status < 500 || log.status >= 600)) return false;
-                    else if (!isNaN(statusFilter) && log.status != parseInt(statusFilter)) return false;
-                }}
-                
-                // Метод фильтр
+                    if (statusFilter === '5xx' && (log.status < 500 || log.status >= 600)) return false;
+                    if (!isNaN(statusFilter) && log.status != parseInt(statusFilter)) return false;
+                }
                 if (methodFilter && log.method !== methodFilter) return false;
-                
-                // URL фильтр
                 if (urlFilter && !log.url.toLowerCase().includes(urlFilter)) return false;
-                
-                // Временной фильтр
                 if (startTimeFilter && log.sort_time < startTimeFilter) return false;
                 if (endTimeFilter && log.sort_time > endTimeFilter) return false;
-                
                 return true;
-            }});
+            });
             
             sortLogs();
             updateStats();
             currentPage = 1;
             renderLogs();
-        }}
+        }
         
-        function sortLogs() {{
-            filteredLogs.sort((a, b) => {{
-                let valA = a[sortField];
-                let valB = b[sortField];
-                
-                if (sortField === 'status' || sortField === 'size') {{
+        function sortLogs() {
+            filteredLogs.sort((a, b) => {
+                let valA = a[sortField], valB = b[sortField];
+                if (sortField === 'status' || sortField === 'size') {
                     valA = parseInt(valA) || 0;
                     valB = parseInt(valB) || 0;
-                }}
-                
-                if (sortDirection === 'asc') {{
-                    return valA > valB ? 1 : -1;
-                }} else {{
-                    return valA < valB ? 1 : -1;
-                }}
-            }});
-        }}
+                }
+                return sortDirection === 'asc' ? (valA > valB ? 1 : -1) : (valA < valB ? 1 : -1);
+            });
+        }
         
-        function sortBy(field) {{
-            if (sortField === field) {{
+        function sortBy(field) {
+            if (sortField === field) {
                 sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
-            }} else {{
+            } else {
                 sortField = field;
                 sortDirection = 'desc';
-            }}
+            }
             sortLogs();
             renderLogs();
-        }}
+        }
         
-        function renderLogs() {{
-            if (!logContainer) return;
+        function renderLogs() {
+            const container = document.getElementById('log-entries');
+            if (!container) return;
             
-            if (filteredLogs.length === 0) {{
-                logContainer.innerHTML = '<div style="padding: 40px; text-align: center; color: #88909f;">🔍 Нет записей, соответствующих фильтрам</div>';
-                document.getElementById('showing-entries').innerHTML = 'Показано 0-0 из 0';
-                document.getElementById('page-info').innerHTML = '0/0';
-                document.getElementById('prev-btn').disabled = true;
-                document.getElementById('next-btn').disabled = true;
-                document.getElementById('first-btn').disabled = true;
-                document.getElementById('last-btn').disabled = true;
+            if (filteredLogs.length === 0) {
+                container.innerHTML = '<div style="padding: 40px; text-align: center;">🔍 Нет записей</div>';
                 return;
-            }}
+            }
             
             const start = (currentPage - 1) * pageSize;
             const end = Math.min(start + pageSize, filteredLogs.length);
             const pageLogs = filteredLogs.slice(start, end);
             
-            const html = pageLogs.map(log => `
-                <div class="log-line ${{log.status >= 500 ? 'error-500' : log.status >= 400 ? 'error-404' : ''}}">
-                    <span style="color: #88909f;">${{formatTime(log.timestamp)}}</span>
-                    <span class="ip-address">${{log.ip || ''}}</span>
-                    <span><span class="method-badge">${{log.method || ''}}</span></span>
-                    <span style="color: #e6e6e6; word-break: break-all;">${{log.url || ''}}</span>
-                    <span><span class="status-badge" style="${{log.color || ''}}">${{log.status || ''}}</span></span>
-                    <span style="color: #88909f; text-align: right;">${{log.size || '0'}} B</span>
+            container.innerHTML = pageLogs.map(log => `
+                <div class="log-line ${log.status >= 500 ? 'error-500' : log.status >= 400 ? 'error-404' : ''}" onclick="showDetails(${JSON.stringify(log).replace(/</g, '\\u003c')})">
+                    <span style="color: #88909f;">${log.timestamp}</span>
+                    <span class="ip-address">${log.ip}</span>
+                    <span><span class="method-badge">${log.method}</span></span>
+                    <span style="word-break: break-all;">${log.url.substring(0, 80)}${log.url.length > 80 ? '...' : ''}</span>
+                    <span><span class="status-badge" style="${log.color}">${log.status}</span></span>
+                    <span style="text-align: right;">${log.size} B</span>
                 </div>
             `).join('');
             
-            logContainer.innerHTML = html;
-            
-            // Обновляем информацию о пагинации
             const totalPages = Math.ceil(filteredLogs.length / pageSize);
-            document.getElementById('showing-entries').innerHTML = 
-                `Показано ${{start+1}}-${{end}} из ${{filteredLogs.length}}`;
-            document.getElementById('page-info').innerHTML = 
-                `${{currentPage}}/${{totalPages}}`;
-            document.getElementById('filtered-percent').innerHTML = 
-                `(${{((filteredLogs.length / logs.length) * 100).toFixed(1)}}% от общего)`;
-            
+            document.getElementById('showing-entries').innerHTML = `Показано ${start+1}-${end} из ${filteredLogs.length}`;
+            document.getElementById('page-info').innerHTML = `${currentPage}/${totalPages || 1}`;
             document.getElementById('prev-btn').disabled = currentPage === 1;
             document.getElementById('next-btn').disabled = currentPage >= totalPages;
-            document.getElementById('first-btn').disabled = currentPage === 1;
-            document.getElementById('last-btn').disabled = currentPage >= totalPages;
-            
             document.getElementById('update-time').textContent = new Date().toLocaleTimeString();
-        }}
+        }
         
-        function firstPage() {{
-            currentPage = 1;
-            renderLogs();
-        }}
-        
-        function prevPage() {{
-            if (currentPage > 1) {{
-                currentPage--;
-                renderLogs();
-            }}
-        }}
-        
-        function nextPage() {{
-            if (currentPage < Math.ceil(filteredLogs.length / pageSize)) {{
-                currentPage++;
-                renderLogs();
-            }}
-        }}
-        
-        function lastPage() {{
-            currentPage = Math.ceil(filteredLogs.length / pageSize);
-            renderLogs();
-        }}
-        
-        function updateStats() {{
+        function updateStats() {
             document.getElementById('total-count').textContent = filteredLogs.length;
-            
-            const errors = filteredLogs.filter(l => l.status >= 400).length;
-            document.getElementById('error-count').textContent = errors;
-            
-            const uniqueIPs = new Set(filteredLogs.map(l => l.ip)).size;
-            document.getElementById('unique-ips').textContent = uniqueIPs;
-            
-            // Временной диапазон
-            if (filteredLogs.length > 0) {{
-                const oldest = new Date(Math.min(...filteredLogs.map(l => l.sort_time)) * 1000);
-                const newest = new Date(Math.max(...filteredLogs.map(l => l.sort_time)) * 1000);
-                document.getElementById('time-range-stats').innerHTML = 
-                    `${{oldest.toLocaleDateString()}} ${{oldest.toLocaleTimeString()}}<br>→ ${{newest.toLocaleDateString()}} ${{newest.toLocaleTimeString()}}`;
-            }} else {{
-                document.getElementById('time-range-stats').textContent = '-';
-            }}
-        }}
+            document.getElementById('error-count').textContent = filteredLogs.filter(l => l.status >= 400).length;
+            document.getElementById('unique-ips').textContent = new Set(filteredLogs.map(l => l.ip)).size;
+        }
         
-        function togglePause() {{
+        function prevPage() { if (currentPage > 1) { currentPage--; renderLogs(); } }
+        function nextPage() { if (currentPage < Math.ceil(filteredLogs.length / pageSize)) { currentPage++; renderLogs(); } }
+        function togglePause() {
             isPaused = !isPaused;
             document.getElementById('pause-icon').textContent = isPaused ? '▶️' : '⏸️';
             document.getElementById('pause-text').textContent = isPaused ? 'Возобновить' : 'Пауза';
-        }}
+        }
         
-        function loadFullLog() {{
-            logContainer.innerHTML = '<div style="padding: 40px; text-align: center; color: #88909f;">🔄 Загрузка лог-файла...</div>';
-            
+        function loadFullLog() {
+            const container = document.getElementById('log-entries');
+            container.innerHTML = '<div style="padding: 40px; text-align: center;">🔄 Загрузка лога...</div>';
             fetch('/full-log')
-                .then(response => response.json())
-                .then(data => {{
-                    logs = data;
-                    document.getElementById('total-file-count').textContent = logs.length;
-                    document.getElementById('total-file-entries').innerHTML = 
-                        `📊 Всего записей: ${{logs.length}}`;
-                    applyFilters();
-                }})
-                .catch(error => {{
-                    logContainer.innerHTML = '<div style="padding: 40px; text-align: center; color: #ff6b6b;">❌ Ошибка загрузки лога</div>';
-                    console.error('Error loading log:', error);
-                }});
-        }}
+                .then(res => res.json())
+                .then(data => { logs = data; applyFilters(); })
+                .catch(err => { container.innerHTML = '<div style="padding: 40px; text-align: center; color:#ff6b6b;">❌ Ошибка загрузки</div>'; });
+        }
         
-        function clearFilters() {{
+        function clearFilters() {
             document.getElementById('filter-ip').value = '';
             document.getElementById('filter-status').value = '';
             document.getElementById('filter-method').value = '';
             document.getElementById('filter-url').value = '';
-            
-            // Сброс временных фильтров
             startTimeFilter = null;
             endTimeFilter = null;
-            activePreset = null;
-            document.querySelectorAll('.time-preset-btn').forEach(btn => {{
-                btn.classList.remove('active');
-            }});
+            document.querySelectorAll('.time-preset-btn').forEach(btn => btn.classList.remove('active'));
             document.getElementById('custom-time-picker').style.display = 'none';
-            
             applyFilters();
-        }}
+        }
         
-        function copyVisible() {{
-            const text = filteredLogs.map(l => l.raw).join('\\n');
-            navigator.clipboard.writeText(text);
-            alert(`📋 Скопировано ${{filteredLogs.length}} строк`);
-        }}
-        
-        function exportFiltered() {{
+        function exportFiltered() {
             let csv = 'Timestamp,IP,Method,URL,Status,Size,Referer,User Agent\\n';
-            filteredLogs.forEach(log => {{
-                csv += `"${{log.timestamp}}","${{log.ip}}","${{log.method}}","${{log.url}}","${{log.status}}","${{log.size}}","${{log.referer}}","${{log.agent}}"\\n`;
-            }});
-            
-            const blob = new Blob([csv], {{ type: 'text/csv' }});
-            const url = window.URL.createObjectURL(blob);
+            filteredLogs.forEach(log => {
+                csv += `"${log.timestamp}","${log.ip}","${log.method}","${log.url}","${log.status}","${log.size}","${log.referer}","${log.agent}"\\n`;
+            });
+            const blob = new Blob([csv], { type: 'text/csv' });
             const a = document.createElement('a');
-            a.href = url;
-            a.download = `nginx_logs_${{new Date().toISOString().slice(0,10)}}.csv`;
+            a.href = URL.createObjectURL(blob);
+            a.download = `nginx_logs_${new Date().toISOString().slice(0,10)}.csv`;
             a.click();
-        }}
+        }
         
-        // Временные фильтры
-        function setTimePreset(minutes) {{
-            const now = Date.now() / 1000;
-            startTimeFilter = now - (minutes * 60);
-            endTimeFilter = null;
-            
-            // Обновляем UI
-            document.querySelectorAll('.time-preset-btn').forEach(btn => {{
-                btn.classList.remove('active');
-            }});
-            event.target.classList.add('active');
-            
-            document.getElementById('custom-time-picker').style.display = 'none';
-            activePreset = minutes;
-            
+        function applyCustomTime() {
+            const start = document.getElementById('start-time').value;
+            const end = document.getElementById('end-time').value;
+            if (start) startTimeFilter = new Date(start).getTime() / 1000;
+            if (end) endTimeFilter = new Date(end).getTime() / 1000;
             applyFilters();
-        }}
+        }
         
-        function applyCustomTimeRange() {{
-            const startInput = document.getElementById('start-time').value;
-            const endInput = document.getElementById('end-time').value;
-            
-            if (startInput) {{
-                startTimeFilter = new Date(startInput).getTime() / 1000;
-            }}
-            if (endInput) {{
-                endTimeFilter = new Date(endInput).getTime() / 1000;
-            }}
-            
-            document.querySelectorAll('.time-preset-btn').forEach(btn => {{
-                btn.classList.remove('active');
-            }});
-            activePreset = null;
-            
-            applyFilters();
-        }}
-        
-        function clearCustomTimeRange() {{
-            document.getElementById('start-time').value = '';
-            document.getElementById('end-time').value = '';
-            startTimeFilter = null;
-            endTimeFilter = null;
-            applyFilters();
-        }}
-        
-        // Инициализация обработчиков
-        window.onload = function() {{
-            // Обработчики пресетов времени
-            document.querySelectorAll('.time-preset-btn[data-minutes]').forEach(btn => {{
-                btn.addEventListener('click', function(e) {{
-                    const minutes = parseInt(this.dataset.minutes);
-                    setTimePreset(minutes);
-                }});
-            }});
-            
-            // Обработчик кнопки "Свой"
-            document.getElementById('custom-time-btn').addEventListener('click', function() {{
+        window.onload = () => {
+            document.querySelectorAll('.time-preset-btn[data-minutes]').forEach(btn => {
+                btn.onclick = () => {
+                    const minutes = parseInt(btn.dataset.minutes);
+                    const now = Date.now() / 1000;
+                    startTimeFilter = now - (minutes * 60);
+                    endTimeFilter = null;
+                    document.querySelectorAll('.time-preset-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    document.getElementById('custom-time-picker').style.display = 'none';
+                    applyFilters();
+                };
+            });
+            document.getElementById('custom-time-btn').onclick = () => {
                 const picker = document.getElementById('custom-time-picker');
                 picker.style.display = picker.style.display === 'none' ? 'block' : 'none';
-                
-                // Убираем активный пресет
-                document.querySelectorAll('.time-preset-btn').forEach(btn => {{
-                    btn.classList.remove('active');
-                }});
-                activePreset = null;
-            }});
-            
-            // Подключаем фильтры
+                document.querySelectorAll('.time-preset-btn').forEach(b => b.classList.remove('active'));
+                startTimeFilter = null;
+                endTimeFilter = null;
+            };
             document.getElementById('filter-ip').addEventListener('input', applyFilters);
             document.getElementById('filter-status').addEventListener('change', applyFilters);
             document.getElementById('filter-method').addEventListener('change', applyFilters);
             document.getElementById('filter-url').addEventListener('input', applyFilters);
-            
-            // Пагинация
-            document.getElementById('page-size').addEventListener('change', function() {{
+            document.getElementById('page-size').addEventListener('change', function() {
                 pageSize = parseInt(this.value);
                 currentPage = 1;
                 renderLogs();
-            }});
-            
-            // Автоматически загружаем лог
+            });
             loadFullLog();
-        }};
+        };
         
-        // WebSocket для реального времени
         const evtSource = new EventSource('/stream');
-        evtSource.onmessage = function(e) {{
-            if (!isPaused && e.data) {{
-                try {{
+        evtSource.onmessage = (e) => {
+            if (!isPaused && e.data) {
+                try {
                     const logData = JSON.parse(e.data);
                     logs.unshift(logData);
                     if (logs.length > 10000) logs.pop();
                     applyFilters();
-                }} catch(e) {{
-                    console.error('Parse error:', e);
-                }}
-            }}
-        }};
-        
-        evtSource.onerror = function() {{
-            console.log('Reconnecting...');
-        }};
+                } catch(e) { console.error(e); }
+            }
+        };
     </script>
 </body>
 </html>
@@ -944,11 +862,8 @@ def handle_client(client):
     client.send(b'Connection: close\r\n')
     client.send(b'\r\n')
     
-    # Собираем уникальные статусы из всего лога
     status_codes = collect_status_codes()
-    status_options = ''
-    for code in status_codes:
-        status_options += f'<option value="{code}">{code}</option>\n'
+    status_options = ''.join(f'<option value="{c}">{c}</option>' for c in status_codes)
     
     html = html_template.format(log_file=log_file, status_options=status_options)
     client.send(html.encode())
@@ -961,11 +876,7 @@ def handle_stream(client):
     client.send(b'Connection: keep-alive\r\n')
     client.send(b'\r\n')
     
-    proc = subprocess.Popen(['tail', '-f', log_file], 
-                          stdout=subprocess.PIPE, 
-                          stderr=subprocess.PIPE,
-                          text=True,
-                          bufsize=1)
+    proc = subprocess.Popen(['tail', '-f', log_file], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
     
     try:
         while True:
@@ -980,53 +891,40 @@ def handle_stream(client):
         client.close()
 
 def handle_full_log(client):
-    """Отдаёт ВЕСЬ лог-файл для начальной загрузки"""
     client.send(b'HTTP/1.1 200 OK\r\n')
     client.send(b'Content-Type: application/json\r\n')
     client.send(b'Connection: close\r\n')
     client.send(b'\r\n')
-    
-    logs = load_full_log()
-    client.send(json.dumps(logs).encode())
+    client.send(json.dumps(load_full_log()).encode())
     client.close()
 
 def main():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(('0.0.0.0', port))
+    server.bind(('127.0.0.1', port))
     server.listen(10)
     
     print(f'\n🚀 Nginx Log Analyzer Pro запущен!')
     print(f'📁 Файл: {log_file}')
-    print(f'🌐 Открой в браузере: http://localhost:{port}')
-    print(f'\n✨ Новые возможности:')
-    print('   • Все статусы ответов из лога')
-    print('   • Дата в формате ДД.ММ.ГГГГ ЧЧ:ММ')
-    print('   • Увеличенная колонка IP (180px)')
-    print('   • Пагинация по 100 строк (можно менять)')
-    print('   • Фильтр по времени: 5м,10м,30м,1ч,3ч,6ч,12ч,24ч,3д,7д')
-    print('   • Произвольный интервал времени')
-    print('   • Загрузка ВСЕГО лог-файла')
-    print('   • Экспорт в CSV')
+    print(f'🌐 Доступ: http://127.0.0.1:{port}')
+    print(f'\n✨ НОВАЯ ФИЧА: Клик по любой строке → детальный просмотр запроса!')
     print('\n⏎ Ctrl+C для остановки\n')
     
-    try:
-        while True:
-            client, addr = server.accept()
-            try:
-                request = client.recv(1024).decode()
-                if '/stream' in request:
-                    threading.Thread(target=handle_stream, args=(client,)).start()
-                elif '/full-log' in request:
-                    threading.Thread(target=handle_full_log, args=(client,)).start()
-                else:
-                    threading.Thread(target=handle_client, args=(client,)).start()
-            except:
-                client.close()
-    except KeyboardInterrupt:
-        print('\n👋 Сервер остановлен')
-    finally:
-        server.close()
+    while True:
+        client, addr = server.accept()
+        try:
+            request = client.recv(1024).decode()
+            if '/stream' in request:
+                threading.Thread(target=handle_stream, args=(client,)).start()
+            elif '/full-log' in request:
+                threading.Thread(target=handle_full_log, args=(client,)).start()
+            else:
+                threading.Thread(target=handle_client, args=(client,)).start()
+        except:
+            client.close()
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print('\n👋 Сервер остановлен')
