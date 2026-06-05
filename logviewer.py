@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 import argparse
-import csv
 import html
-import io
 import json
 import os
 import re
@@ -418,24 +416,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             text-align: center;
             color: #88909f;
         }
-
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: #0f1319;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: #2c313a;
-            border-radius: 4px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: #7aa2f7;
-        }
     </style>
 </head>
 
@@ -500,34 +480,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <div class="filter-group">
                 <label>🔍 URL</label>
                 <input type="text" id="filter-url" placeholder="текст в URL..." autocomplete="off">
-            </div>
-
-            <div class="filter-group">
-                <label>⏰ Время</label>
-                <div class="time-range">
-                    <div class="time-presets">
-                        <button class="time-preset-btn" data-minutes="5">5 мин</button>
-                        <button class="time-preset-btn" data-minutes="10">10 мин</button>
-                        <button class="time-preset-btn" data-minutes="30">30 мин</button>
-                        <button class="time-preset-btn" data-minutes="60">1 час</button>
-                        <button class="time-preset-btn" data-minutes="180">3 часа</button>
-                        <button class="time-preset-btn" data-minutes="360">6 часов</button>
-                        <button class="time-preset-btn" data-minutes="720">12 часов</button>
-                        <button class="time-preset-btn" data-minutes="1440">24 часа</button>
-                        <button class="time-preset-btn" data-minutes="4320">3 дня</button>
-                        <button class="time-preset-btn" data-minutes="10080">7 дней</button>
-                        <button class="time-preset-btn" id="custom-time-btn">📅 Свой</button>
-                    </div>
-
-                    <div id="custom-time-picker" style="display:none;">
-                        <div class="custom-time-range">
-                            <input type="datetime-local" id="start-time">
-                            <input type="datetime-local" id="end-time">
-                            <button class="button" onclick="applyCustomTimeRange()">Применить</button>
-                            <button class="button" onclick="clearCustomTimeRange()">Очистить</button>
-                        </div>
-                    </div>
-                </div>
             </div>
         </div>
 
@@ -598,8 +550,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     let sortDirection = "desc";
     let currentPage = 1;
     let pageSize = 100;
-    let startTimeFilter = null;
-    let endTimeFilter = null;
     let evtSource = null;
 
     const logContainer = document.getElementById("log-entries");
@@ -627,7 +577,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         filteredLogs = logs.filter(log => {
             if (!log) return false;
-
             if (ipFilter && !String(log.ip || "").toLowerCase().includes(ipFilter)) return false;
 
             if (statusFilter) {
@@ -638,8 +587,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
             if (methodFilter && log.method !== methodFilter) return false;
             if (urlFilter && !String(log.url || "").toLowerCase().includes(urlFilter)) return false;
-            if (startTimeFilter && log.sort_time < startTimeFilter) return false;
-            if (endTimeFilter && log.sort_time > endTimeFilter) return false;
 
             return true;
         });
@@ -693,7 +640,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             empty.className = "empty";
             empty.textContent = "🔍 Нет записей, соответствующих фильтрам";
             logContainer.appendChild(empty);
-
             updatePagination(0, 0, 0, 0);
             return;
         }
@@ -746,7 +692,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         const totalPages = Math.ceil(filteredLogs.length / pageSize);
         updatePagination(start + 1, end, filteredLogs.length, totalPages);
-
         document.getElementById("update-time").textContent = new Date().toLocaleTimeString();
     }
 
@@ -799,9 +744,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
         if (filteredLogs.length > 0) {
             const times = filteredLogs.map(l => l.sort_time).filter(Boolean);
+
             if (times.length) {
                 const oldest = new Date(Math.min(...times) * 1000);
                 const newest = new Date(Math.max(...times) * 1000);
+
                 document.getElementById("time-range-stats").innerHTML =
                     `${oldest.toLocaleDateString()} ${oldest.toLocaleTimeString()}<br>→ ${newest.toLocaleDateString()} ${newest.toLocaleTimeString()}`;
             } else {
@@ -889,15 +836,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         document.getElementById("filter-status").value = "";
         document.getElementById("filter-method").value = "";
         document.getElementById("filter-url").value = "";
-
-        startTimeFilter = null;
-        endTimeFilter = null;
-
-        document.querySelectorAll(".time-preset-btn").forEach(btn => btn.classList.remove("active"));
-        document.getElementById("custom-time-picker").style.display = "none";
-        document.getElementById("start-time").value = "";
-        document.getElementById("end-time").value = "";
-
         applyFilters();
     }
 
@@ -915,9 +853,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     function safeCsvCell(value) {
         value = String(value ?? "");
+
         if (/^[=+\-@]/.test(value)) {
             value = "'" + value;
         }
+
         return value;
     }
 
@@ -954,40 +894,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         window.URL.revokeObjectURL(url);
     }
 
-    function setTimePreset(minutes, button) {
-        const now = Date.now() / 1000;
-
-        startTimeFilter = now - minutes * 60;
-        endTimeFilter = null;
-
-        document.querySelectorAll(".time-preset-btn").forEach(btn => btn.classList.remove("active"));
-        button.classList.add("active");
-
-        document.getElementById("custom-time-picker").style.display = "none";
-
-        applyFilters();
-    }
-
-    function applyCustomTimeRange() {
-        const startInput = document.getElementById("start-time").value;
-        const endInput = document.getElementById("end-time").value;
-
-        startTimeFilter = startInput ? new Date(startInput).getTime() / 1000 : null;
-        endTimeFilter = endInput ? new Date(endInput).getTime() / 1000 : null;
-
-        document.querySelectorAll(".time-preset-btn").forEach(btn => btn.classList.remove("active"));
-
-        applyFilters();
-    }
-
-    function clearCustomTimeRange() {
-        document.getElementById("start-time").value = "";
-        document.getElementById("end-time").value = "";
-        startTimeFilter = null;
-        endTimeFilter = null;
-        applyFilters();
-    }
-
     function connectStream() {
         if (evtSource) {
             evtSource.close();
@@ -1018,19 +924,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
 
     window.onload = function() {
-        document.querySelectorAll(".time-preset-btn[data-minutes]").forEach(btn => {
-            btn.addEventListener("click", function() {
-                setTimePreset(parseInt(this.dataset.minutes), this);
-            });
-        });
-
-        document.getElementById("custom-time-btn").addEventListener("click", function() {
-            const picker = document.getElementById("custom-time-picker");
-            picker.style.display = picker.style.display === "none" ? "block" : "none";
-
-            document.querySelectorAll(".time-preset-btn").forEach(btn => btn.classList.remove("active"));
-        });
-
         document.getElementById("filter-ip").addEventListener("input", applyFilters);
         document.getElementById("filter-status").addEventListener("change", applyFilters);
         document.getElementById("filter-method").addEventListener("change", applyFilters);
@@ -1052,7 +945,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 
 class LogViewerHandler(BaseHTTPRequestHandler):
-    server_version = "NginxLogAnalyzer/2.0"
+    server_version = "NginxLogAnalyzer/2.1"
 
     def log_message(self, fmt, *args):
         print("[%s] %s" % (self.log_date_time_string(), fmt % args))
@@ -1160,13 +1053,16 @@ class LogViewerHandler(BaseHTTPRequestHandler):
 
         except FileNotFoundError:
             error = json.dumps({"error": "tail command not found"}, ensure_ascii=False)
+
             try:
                 self.wfile.write(f"event: error\ndata: {error}\n\n".encode("utf-8"))
                 self.wfile.flush()
             except Exception:
                 pass
+
         except Exception as exc:
             print(f"Ошибка SSE-потока: {exc}", file=sys.stderr)
+
         finally:
             if proc and proc.poll() is None:
                 proc.terminate()
