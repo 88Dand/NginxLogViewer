@@ -9,8 +9,8 @@ SCRIPT_PATH="${INSTALL_DIR}/${SCRIPT_NAME}"
 LOG_PATH_DEFAULT="/var/www/api/nginx-logs/site.access.log"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/88Dand/NginxLogViewer/main/logviewer.py"
 PORT=8080
-VERSION="2.1"
- 
+VERSION="2.2"
+
 # === Цветной вывод ===
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -153,7 +153,7 @@ stop_service() {
 full_uninstall() {
     print_header "ПОЛНОЕ УДАЛЕНИЕ"
     echo -n -e "${YELLOW}Вы уверены? (y/N): ${NC}"
-    read -r confirm
+    read -r confirm </dev/tty
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         print_info "Отмена"
         return
@@ -231,6 +231,16 @@ update_script() {
     fi
 }
 
+# === Функция для получения ввода ===
+get_choice() {
+    local choice
+    # Очищаем stdin перед чтением
+    while read -r -t 0; do read -r; done
+    # Читаем с терминала
+    read -r choice </dev/tty
+    echo "$choice"
+}
+
 # === Меню ===
 show_menu() {
     clear
@@ -254,7 +264,7 @@ show_menu() {
 pause() {
     echo ""
     echo -n "Нажмите Enter для продолжения..."
-    read -r
+    read -r </dev/tty
 }
 
 # === Главный цикл ===
@@ -273,7 +283,7 @@ main() {
     # Интерактивный режим
     while true; do
         show_menu
-        read -r choice
+        choice=$(get_choice)
         
         case "$choice" in
             1) full_install; pause ;;
@@ -290,8 +300,8 @@ main() {
                 exit 0
                 ;;
             *)
-                print_error "Неверный выбор. Пожалуйста, введите число от 0 до 8"
-                sleep 1.5
+                print_error "Неверный выбор: '$choice'. Пожалуйста, введите число от 0 до 8"
+                sleep 2
                 ;;
         esac
     done
