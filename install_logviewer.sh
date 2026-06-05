@@ -1,255 +1,389 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-# === Конфигурация ===
 SERVICE_NAME="nginx-log-analyzer"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-INSTALL_DIR="/home/rps"
+APP_USER="nginxlogviewer"
+INSTALL_DIR="/opt/nginx-log-analyzer"
 SCRIPT_NAME="logviewer.py"
 SCRIPT_PATH="${INSTALL_DIR}/${SCRIPT_NAME}"
-LOG_PATH_DEFAULT="/var/www/api/nginx-logs/site.access.log"
+CONFIG_FILE="/etc/${SERVICE_NAME}.conf"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/88Dand/NginxLogViewer/main/logviewer.py"
-PORT=8080
 
-# === Цветной вывод ===
+DEFAULT_LOG_PATH="/var/www/api/nginx-logs/site.access.log"
+DEFAULT_PORT="8080"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# === Функции ===
-print_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+info() { echo -e "${BLUE}[INFO]${NC} $*"; }
+ok() { echo -e "${GREEN}[OK]${NC} $*"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
+err() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+need_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    err "Запустите скрипт от root или через sudo"
+    exit 1
+  fi
 }
 
-print_success() {
-    echo -e "${GREEN}[OK]${NC} $1"
+has_tty() {
+  [[ -r /dev/tty && -w /dev/tty ]]
 }
 
-print_warning() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
+ask() {
+  local prompt="$1"
+  local default="${2:-}"
+  local answer
+
+  if has_tty; then
+    if [[ -n "$default" ]]; then
+      read -r -p "$prompt [$default]: " answer < /dev/tty
+      echo "${answer:-$default}"
+    else
+      read -r -p "$prompt: " answer < /dev/tty
+      echo "$answer"
+    fi
+  else
+    echo "$default"
+  fi
 }
 
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+pause() {
+  if has_tty; then
+    read -r -p "Нажмите Enter для продолжения..." _ < /dev/tty
+  fi
 }
 
-# === Проверка прав ===
-if [[ $EUID -ne 0 ]]; then
-   print_error "Этот скрипт должен запускаться от root (или через sudo)"
-   exit 1
-fi
+require_cmds() {
+  command -v python3 >/dev/null 2>&1 || {
+    err "python3 не найден. Установите: apt update && apt install -y python3"
+    exit 1
+  }
 
-print_info "🚀 Начинаем установку Nginx Log Analyzer..."
-echo "────────────────────────────────────────"
+  if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+    err "Нужен curl или wget"
+    exit 1
+  fi
 
-# === ШАГ 1: Создание рабочей директории ===
-print_info "Создание директории ${INSTALL_DIR}..."
-mkdir -p "${INSTALL_DIR}"
-cd "${INSTALL_DIR}" || exit 1
-print_success "Директория готова"
+  command -v systemctl >/dev/null 2>&1 || {
+    err "systemctl не найден. Нужна система с systemd"
+    exit 1
+  }
+}
 
-# === ШАГ 2: Скачивание и исправление скрипта ===
-print_info "📥 Загрузка лог-анализатора..."
+download_file() {
+  local url="$1"
+  local dest="$2"
 
-# Пытаемся скачать с GitHub, но там обрезанный файл, поэтому используем эталонный код
-cat > "${SCRIPT_PATH}" << 'EOF'
-# === ПОЛНАЯ РАБОЧАЯ ВЕРСИЯ ИЗ НАШЕГО ДИАЛОГА ===
-# (Здесь вставлен полный проверенный код, который мы создали ранее)
-import os
-import socket
-import subprocess
-import threading
-import sys
-import json
-from datetime import datetime
-import re
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$dest"
+  else
+    wget -qO "$dest" "$url"
+  fi
+}
 
-log_file = sys.argv[1] if len(sys.argv) > 1 else '/var/www/api/nginx-logs/site.access.log'
-port = 8080
+create_user() {
+  if ! id "$APP_USER" >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin "$APP_USER"
+    ok "Создан системный пользователь: $APP_USER"
+  fi
+}
 
-def parse_log_line(line):
-    pattern = r'(\S+) \S+ \S+ \[([^\]]+)\] "(\S+) (\S+) [^"]+" (\d+) (\d+) "([^"]*)" "([^"]*)"'
-    match = re.search(pattern, line)
-    if match:
-        ip, timestamp, method, url, status, size, referer, agent = match.groups()
-        try:
-            dt = datetime.strptime(timestamp.split(' ')[0], '%d/%b/%Y:%H:%M:%S')
-            formatted_time = dt.strftime('%d.%m.%Y %H:%M')
-            sort_time = dt.timestamp()
-        except:
-            formatted_time = timestamp
-            sort_time = 0
-        return {
-            'raw': line, 'ip': ip, 'timestamp': formatted_time, 'sort_time': sort_time,
-            'method': method, 'url': url, 'status': int(status), 'size': size,
-            'referer': referer, 'agent': agent,
-            'color': '#ff6b6b;background:#2c1a1a' if int(status) >= 500 else
-                     '#ffd93d;background:#2c261a' if int(status) >= 400 else
-                     '#6bafff;background:#1a1f2c' if int(status) >= 300 else
-                     '#69db7e;background:#1a2c1a'
-        }
-    return None
+write_config() {
+  local log_path="$1"
+  local port="$2"
 
-def collect_status_codes():
-    statuses = set()
-    try:
-        with open(log_file, 'r') as f:
-            for line in f:
-                m = re.search(r'" (\d{3}) ', line)
-                if m: statuses.add(int(m.group(1)))
-    except: pass
-    for s in [200,201,301,302,304,400,401,403,404,405,429,500,502,503,504]:
-        statuses.add(s)
-    return sorted(statuses)
-
-def load_full_log():
-    logs = []
-    try:
-        with open(log_file, 'r') as f:
-            for line in reversed(f.readlines()):
-                p = parse_log_line(line)
-                if p:
-                    logs.append(p)
-                    if len(logs) >= 10000: break
-    except: pass
-    return logs
-
-# HTML-шаблон (сокращён для читаемости - полная версия уже в файле)
-html_template = '''...'''  # Здесь идёт полный HTML из нашего решения
-
-# Обработчики запросов
-def handle_client(client):
-    client.send(b'HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n')
-    status_options = ''.join(f'<option value="{c}">{c}</option>' for c in collect_status_codes())
-    client.send(html_template.format(log_file=log_file, status_options=status_options).encode())
-    client.close()
-
-def handle_stream(client):
-    client.send(b'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n')
-    proc = subprocess.Popen(['tail', '-f', log_file], stdout=subprocess.PIPE, text=True)
-    try:
-        while True:
-            line = proc.stdout.readline()
-            if line:
-                parsed = parse_log_line(line)
-                if parsed:
-                    client.send(f'data: {json.dumps(parsed)}\n\n'.encode())
-    except: proc.kill()
-    client.close()
-
-def handle_full_log(client):
-    client.send(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n')
-    client.send(json.dumps(load_full_log()).encode())
-    client.close()
-
-def main():
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(('127.0.0.1', port))
-    server.listen(10)
-    print(f'\n🚀 Сервер запущен на http://127.0.0.1:{port}')
-    while True:
-        client, _ = server.accept()
-        req = client.recv(1024).decode()
-        if '/stream' in req: threading.Thread(target=handle_stream, args=(client,)).start()
-        elif '/full-log' in req: threading.Thread(target=handle_full_log, args=(client,)).start()
-        else: threading.Thread(target=handle_client, args=(client,)).start()
-
-if __name__ == '__main__':
-    try: main()
-    except KeyboardInterrupt: print('\n👋 Сервер остановлен')
+  cat > "$CONFIG_FILE" <<EOF
+LOG_PATH=${log_path}
+PORT=${port}
 EOF
 
-# Вставляем полный HTML-шаблон (здесь нужно скопировать его из нашего финального решения)
-# Для краткости в этом ответе я сократил, но в реальном скрипте будет полная версия
+  chmod 0644 "$CONFIG_FILE"
+  ok "Создан конфиг: $CONFIG_FILE"
+}
 
-print_success "✅ Скрипт лог-анализатора создан: ${SCRIPT_PATH}"
+grant_log_access() {
+  local log_path="$1"
 
-# === ШАГ 3: Создание systemd сервиса ===
-print_info "⚙️  Создание systemd сервиса..."
+  if [[ ! -e "$log_path" ]]; then
+    warn "Файл лога пока не существует: $log_path"
+    warn "Сервис может не запуститься, пока nginx не создаст этот файл"
+    return 0
+  fi
 
-cat > "${SERVICE_FILE}" << EOF
+  if sudo -u "$APP_USER" test -r "$log_path"; then
+    ok "Пользователь $APP_USER уже может читать лог"
+    return 0
+  fi
+
+  if command -v setfacl >/dev/null 2>&1; then
+    setfacl -m "u:${APP_USER}:r" "$log_path" || true
+    sudo -u "$APP_USER" test -r "$log_path" && {
+      ok "Выдан доступ к логу через ACL"
+      return 0
+    }
+  fi
+
+  warn "Не удалось автоматически выдать доступ к логу"
+  warn "Проверьте права вручную:"
+  echo "  sudo setfacl -m u:${APP_USER}:r ${log_path}"
+  echo "  или настройте группу/права файла лога"
+}
+
+install_app() {
+  need_root
+  require_cmds
+
+  local log_path
+  local port
+
+  log_path="$(ask "Путь к access.log nginx" "$DEFAULT_LOG_PATH")"
+  port="$(ask "Порт сервиса" "$DEFAULT_PORT")"
+
+  info "Установка ${SERVICE_NAME}"
+
+  mkdir -p "$INSTALL_DIR"
+  chmod 0755 "$INSTALL_DIR"
+
+  create_user
+
+  info "Скачивание Python-скрипта..."
+  download_file "$GITHUB_RAW_URL" "$SCRIPT_PATH"
+  chmod 0755 "$SCRIPT_PATH"
+
+  info "Проверка синтаксиса Python..."
+  python3 -m py_compile "$SCRIPT_PATH"
+  ok "Python-скрипт загружен и прошёл проверку"
+
+  write_config "$log_path" "$port"
+  grant_log_access "$log_path"
+
+  cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=Nginx Log Analyzer Pro
-After=network.target nginx.service
-Wants=nginx.service
+Description=Nginx Log Analyzer
+After=network-online.target nginx.service
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-Group=root
+User=${APP_USER}
+Group=${APP_USER}
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=/usr/bin/python3 ${SCRIPT_PATH} ${LOG_PATH_DEFAULT}
-ExecStop=/bin/kill -TERM \$MAINPID
-Restart=always
+EnvironmentFile=${CONFIG_FILE}
+ExecStart=/usr/bin/python3 ${SCRIPT_PATH} \${LOG_PATH}
+Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=${SERVICE_NAME}
-PrivateTmp=yes
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-print_success "✅ Сервис создан: ${SERVICE_FILE}"
+  chmod 0644 "$SERVICE_FILE"
 
-# === ШАГ 4: Перезагрузка systemd и включение сервиса ===
-print_info "🔄 Настройка автозапуска..."
-systemctl daemon-reload
-systemctl enable "${SERVICE_NAME}"
-print_success "✅ Автозапуск включён"
+  systemctl daemon-reload
+  systemctl enable "$SERVICE_NAME"
+  systemctl restart "$SERVICE_NAME"
 
-# === ШАГ 5: Запуск сервиса ===
-print_info "▶️  Запуск сервиса..."
-systemctl restart "${SERVICE_NAME}"
-sleep 2
+  sleep 2
 
-# === ШАГ 6: Проверка статуса ===
-STATUS=$(systemctl is-active "${SERVICE_NAME}")
-if [[ "${STATUS}" == "active" ]]; then
-    print_success "✅ Сервис успешно запущен и работает"
-else
-    print_error "❌ Сервис не запустился. Проверьте: systemctl status ${SERVICE_NAME}"
-fi
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    ok "Сервис установлен и запущен"
+  else
+    err "Сервис не запустился"
+    systemctl status "$SERVICE_NAME" --no-pager || true
+    exit 1
+  fi
 
-echo "────────────────────────────────────────"
-print_info "📊 СТАТУС СЕРВИСА:"
-systemctl status "${SERVICE_NAME}" --no-pager | head -n 20
+  show_info
+}
 
-# === ШАГ 7: Вывод информации о доступности ===
-echo "────────────────────────────────────────"
-print_success "🎉 УСТАНОВКА ЗАВЕРШЕНА!"
-echo ""
+show_info() {
+  echo
+  echo "────────────────────────────────────────"
+  ok "Информация"
+  echo "Сервис:        ${SERVICE_NAME}"
+  echo "Файл сервиса:  ${SERVICE_FILE}"
+  echo "Конфиг:        ${CONFIG_FILE}"
+  echo "Скрипт:        ${SCRIPT_PATH}"
+  echo
+  echo "Так как приложение обычно слушает 127.0.0.1, доступ напрямую:"
+  echo "  http://127.0.0.1:${DEFAULT_PORT}"
+  echo
+  echo "Для внешнего доступа используйте nginx reverse proxy."
+  echo
+  echo "Команды:"
+  echo "  sudo systemctl status ${SERVICE_NAME}"
+  echo "  sudo journalctl -u ${SERVICE_NAME} -f"
+  echo "  sudo systemctl restart ${SERVICE_NAME}"
+  echo "────────────────────────────────────────"
+}
 
-# Получаем IP-адреса
-HOST_IPS=$(hostname -I 2>/dev/null || ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v 127.0.0.1 | head -3)
-LOCAL_IP=$(echo $HOST_IPS | awk '{print $1}')
+status_app() {
+  need_root
+  systemctl status "$SERVICE_NAME" --no-pager || true
+}
 
-if [[ -z "${LOCAL_IP}" ]]; then
-    LOCAL_IP=$(curl -s ifconfig.me 2>/dev/null || wget -qO- ifconfig.me 2>/dev/null)
-fi
+logs_app() {
+  need_root
+  journalctl -u "$SERVICE_NAME" -n 100 --no-pager || true
+}
 
-echo -e "${GREEN}🔗 ССЫЛКИ ДЛЯ ДОСТУПА:${NC}"
-echo ""
-echo -e "   📍 Локальный доступ:  ${BLUE}http://127.0.0.1:${PORT}${NC}"
-echo -e "   🌐 По IP (внутренний): ${BLUE}http://${LOCAL_IP}:${PORT}${NC}"
+follow_logs_app() {
+  need_root
+  journalctl -u "$SERVICE_NAME" -f
+}
 
-# Проверяем, настроен ли Nginx reverse proxy
-if command -v nginx &> /dev/null; then
-    echo ""
-    echo -e "${YELLOW}💡 Если вы настроите Nginx reverse proxy:${NC}"
-    echo -e "      https://office.r-p-s.ru/logs/  (с Basic Auth)"
-    echo -e "      или"
-    echo -e "      http://ваш-сервер:8081        (отдельный порт)"
-fi
+diagnostics() {
+  need_root
 
-echo ""
-print_info "📋 Команды управления сервисом:"
-echo "   sudo systemctl start ${SERVICE_NAME}     - запуск"
-echo "   sudo systemctl stop ${SERVICE_NAME}      - остановка"
-echo "   sudo systemctl restart ${SERVICE_NAME}   - перезапуск"
-echo "   sudo journalctl -u ${SERVICE_NAME} -f    - логи в реальном времени"
+  echo "────────────────────────────────────────"
+  info "Диагностика ${SERVICE_NAME}"
+  echo
 
-echo "────────────────────────────────────────"
+  echo "1. systemd:"
+  systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || true
+  systemctl is-active "$SERVICE_NAME" 2>/dev/null || true
+  echo
+
+  echo "2. Файлы:"
+  ls -l "$SCRIPT_PATH" 2>/dev/null || warn "Нет $SCRIPT_PATH"
+  ls -l "$CONFIG_FILE" 2>/dev/null || warn "Нет $CONFIG_FILE"
+  ls -l "$SERVICE_FILE" 2>/dev/null || warn "Нет $SERVICE_FILE"
+  echo
+
+  echo "3. Конфиг:"
+  if [[ -f "$CONFIG_FILE" ]]; then
+    cat "$CONFIG_FILE"
+  else
+    warn "Конфиг не найден"
+  fi
+  echo
+
+  echo "4. Проверка Python:"
+  if [[ -f "$SCRIPT_PATH" ]]; then
+    python3 -m py_compile "$SCRIPT_PATH" && ok "Синтаксис Python OK"
+  fi
+  echo
+
+  echo "5. Проверка лога:"
+  local log_path
+  log_path="$(grep '^LOG_PATH=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- || true)"
+  if [[ -n "$log_path" && -e "$log_path" ]]; then
+    ls -l "$log_path"
+    if sudo -u "$APP_USER" test -r "$log_path"; then
+      ok "$APP_USER может читать лог"
+    else
+      err "$APP_USER не может читать лог"
+    fi
+  else
+    warn "Лог не найден: ${log_path:-не задан}"
+  fi
+  echo
+
+  echo "6. Последние логи сервиса:"
+  journalctl -u "$SERVICE_NAME" -n 50 --no-pager || true
+  echo "────────────────────────────────────────"
+}
+
+configure_log_path() {
+  need_root
+
+  local current_log current_port new_log new_port
+
+  current_log="$(grep '^LOG_PATH=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- || echo "$DEFAULT_LOG_PATH")"
+  current_port="$(grep '^PORT=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- || echo "$DEFAULT_PORT")"
+
+  new_log="$(ask "Новый путь к access.log nginx" "$current_log")"
+  new_port="$(ask "Порт сервиса" "$current_port")"
+
+  write_config "$new_log" "$new_port"
+  grant_log_access "$new_log"
+
+  systemctl daemon-reload
+  systemctl restart "$SERVICE_NAME"
+
+  ok "Настройки обновлены"
+}
+
+uninstall_app() {
+  need_root
+
+  warn "Удаление ${SERVICE_NAME}"
+
+  systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+  systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+
+  rm -f "$SERVICE_FILE"
+  rm -f "$CONFIG_FILE"
+  rm -rf "$INSTALL_DIR"
+
+  systemctl daemon-reload
+
+  if id "$APP_USER" >/dev/null 2>&1; then
+    userdel "$APP_USER" || true
+  fi
+
+  ok "Удаление завершено"
+}
+
+menu() {
+  while true; do
+    clear || true
+    echo "Nginx Log Analyzer installer"
+    echo "────────────────────────────────────────"
+    echo "1) Установить / переустановить"
+    echo "2) Статус сервиса"
+    echo "3) Показать последние логи"
+    echo "4) Смотреть логи в реальном времени"
+    echo "5) Диагностика"
+    echo "6) Изменить путь к access.log / порт"
+    echo "7) Удалить сервис"
+    echo "0) Выход"
+    echo "────────────────────────────────────────"
+
+    choice="$(ask "Выберите пункт" "1")"
+
+    case "$choice" in
+      1) install_app; pause ;;
+      2) status_app; pause ;;
+      3) logs_app; pause ;;
+      4) follow_logs_app ;;
+      5) diagnostics; pause ;;
+      6) configure_log_path; pause ;;
+      7) uninstall_app; pause ;;
+      0) exit 0 ;;
+      *) warn "Неверный пункт"; pause ;;
+    esac
+  done
+}
+
+case "${1:-}" in
+  --install|-i) install_app ;;
+  --status) status_app ;;
+  --logs) logs_app ;;
+  --follow-logs) follow_logs_app ;;
+  --diagnostics|-d) diagnostics ;;
+  --configure|-c) configure_log_path ;;
+  --uninstall|-u) uninstall_app ;;
+  --help|-h)
+    echo "Использование:"
+    echo "  sudo bash install_logviewer.sh"
+    echo "  sudo bash install_logviewer.sh --install"
+    echo "  sudo bash install_logviewer.sh --diagnostics"
+    echo "  sudo bash install_logviewer.sh --uninstall"
+    ;;
+  *) menu ;;
+esac
