@@ -9,7 +9,7 @@ SCRIPT_PATH="${INSTALL_DIR}/${SCRIPT_NAME}"
 LOG_PATH_DEFAULT="/var/www/api/nginx-logs/site.access.log"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/88Dand/NginxLogViewer/main/logviewer.py"
 PORT=8080
- 
+
 # === Цветной вывод ===
 RED='\033[0;31m'
 GREEN='\033[0;32m'
