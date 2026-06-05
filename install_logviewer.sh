@@ -9,7 +9,13 @@ SCRIPT_PATH="${INSTALL_DIR}/${SCRIPT_NAME}"
 LOG_PATH_DEFAULT="/var/www/api/nginx-logs/site.access.log"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/88Dand/NginxLogViewer/main/logviewer.py"
 PORT=8080
-VERSION="2.2"
+VERSION="2.4"
+
+# === Перенаправляем stdin на терминал (один раз) ===
+# Это нужно, чтобы скрипт мог читать ввод при запуске через curl | bash
+if [ ! -t 0 ]; then
+    exec < /dev/tty
+fi
 
 # === Цветной вывод ===
 RED='\033[0;31m'
@@ -153,7 +159,7 @@ stop_service() {
 full_uninstall() {
     print_header "ПОЛНОЕ УДАЛЕНИЕ"
     echo -n -e "${YELLOW}Вы уверены? (y/N): ${NC}"
-    read -r confirm </dev/tty
+    read -r confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         print_info "Отмена"
         return
@@ -231,16 +237,6 @@ update_script() {
     fi
 }
 
-# === Функция для получения ввода ===
-get_choice() {
-    local choice
-    # Очищаем stdin перед чтением
-    while read -r -t 0; do read -r; done
-    # Читаем с терминала
-    read -r choice </dev/tty
-    echo "$choice"
-}
-
 # === Меню ===
 show_menu() {
     clear
@@ -260,11 +256,11 @@ show_menu() {
     echo -n -e "${BLUE}Выберите действие [0-8]: ${NC}"
 }
 
-# === Пауза после выполнения ===
+# === Пауза ===
 pause() {
     echo ""
     echo -n "Нажмите Enter для продолжения..."
-    read -r </dev/tty
+    read -r
 }
 
 # === Главный цикл ===
@@ -283,13 +279,13 @@ main() {
     # Интерактивный режим
     while true; do
         show_menu
-        choice=$(get_choice)
+        read -r choice
         
         case "$choice" in
             1) full_install; pause ;;
             2) update_script; pause ;;
             3) show_status; pause ;;
-            4) show_logs ;;  # Без паузы, так как это интерактивный режим
+            4) show_logs ;;
             5) restart_service; pause ;;
             6) stop_service; pause ;;
             7) clean_old_files; pause ;;
@@ -299,9 +295,12 @@ main() {
                 print_info "До свидания!"
                 exit 0
                 ;;
+            "")
+                continue
+                ;;
             *)
-                print_error "Неверный выбор: '$choice'. Пожалуйста, введите число от 0 до 8"
-                sleep 2
+                print_error "Неверный выбор: '$choice'"
+                sleep 1.5
                 ;;
         esac
     done
