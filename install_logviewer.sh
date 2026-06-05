@@ -9,11 +9,14 @@ SCRIPT_PATH="${INSTALL_DIR}/${SCRIPT_NAME}"
 LOG_PATH_DEFAULT="/var/www/api/nginx-logs/site.access.log"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/88Dand/NginxLogViewer/main/logviewer.py"
 PORT=8080
-VERSION="2.4"
+VERSION="2.5"
 
-# === Перенаправляем stdin на терминал (один раз) ===
-# Это нужно, чтобы скрипт мог читать ввод при запуске через curl | bash
-if [ ! -t 0 ]; then
+# === Определяем, нужно ли переключать ввод ===
+# Переключаем только если:
+# 1. Запущены через пайп (curl | bash) И
+# 2. Нет аргументов командной строки (хотим меню)
+if [ ! -t 0 ] && [ $# -eq 0 ]; then
+    # Сохраняем оригинальный PID для возможности выхода
     exec < /dev/tty
 fi
 
@@ -267,13 +270,34 @@ pause() {
 main() {
     # Если есть аргумент командной строки
     case "$1" in
-        install) full_install; exit 0 ;;
-        update) update_script; exit 0 ;;
-        status) show_status; exit 0 ;;
-        logs) show_logs; exit 0 ;;
-        restart) restart_service; exit 0 ;;
-        stop) stop_service; exit 0 ;;
-        uninstall) full_uninstall; exit 0 ;;
+        install)
+            full_install
+            exit 0
+            ;;
+        update)
+            update_script
+            exit 0
+            ;;
+        status)
+            show_status
+            exit 0
+            ;;
+        logs)
+            show_logs
+            exit 0
+            ;;
+        restart)
+            restart_service
+            exit 0
+            ;;
+        stop)
+            stop_service
+            exit 0
+            ;;
+        uninstall)
+            full_uninstall
+            exit 0
+            ;;
     esac
     
     # Интерактивный режим
@@ -307,4 +331,4 @@ main() {
 }
 
 # === Запуск ===
-main "$1"
+main "$@"
