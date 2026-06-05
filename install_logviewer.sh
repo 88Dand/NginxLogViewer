@@ -2,7 +2,6 @@
 set -Eeuo pipefail
 
 SERVICE_NAME="nginx-log-analyzer"
-APP_USER="nginxlogviewer"
 INSTALL_DIR="/opt/nginx-log-analyzer"
 SCRIPT_NAME="logviewer.py"
 SCRIPT_PATH="${INSTALL_DIR}/${SCRIPT_NAME}"
@@ -87,12 +86,6 @@ download_file() {
   fi
 }
 
-create_user() {
-  if ! id "$APP_USER" >/dev/null 2>&1; then
-    useradd --system --no-create-home --shell /usr/sbin/nologin "$APP_USER"
-    ok "Создан системный пользователь: $APP_USER"
-  fi
-}
 
 write_config() {
   local log_path="$1"
@@ -107,33 +100,6 @@ EOF
   ok "Создан конфиг: $CONFIG_FILE"
 }
 
-grant_log_access() {
-  local log_path="$1"
-
-  if [[ ! -e "$log_path" ]]; then
-    warn "Файл лога пока не существует: $log_path"
-    warn "Сервис может не запуститься, пока nginx не создаст этот файл"
-    return 0
-  fi
-
-  if sudo -u "$APP_USER" test -r "$log_path"; then
-    ok "Пользователь $APP_USER уже может читать лог"
-    return 0
-  fi
-
-  if command -v setfacl >/dev/null 2>&1; then
-    setfacl -m "u:${APP_USER}:r" "$log_path" || true
-    sudo -u "$APP_USER" test -r "$log_path" && {
-      ok "Выдан доступ к логу через ACL"
-      return 0
-    }
-  fi
-
-  warn "Не удалось автоматически выдать доступ к логу"
-  warn "Проверьте права вручную:"
-  echo "  sudo setfacl -m u:${APP_USER}:r ${log_path}"
-  echo "  или настройте группу/права файла лога"
-}
 
 install_app() {
   need_root
@@ -171,13 +137,20 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=${APP_USER}
-Group=${APP_USER}
-WorkingDirectory=${INSTALL_DIR}
-EnvironmentFile=${CONFIG_FILE}
-ExecStart=/usr/bin/python3 ${SCRIPT_PATH} \${LOG_PATH}
+User=root
+Group=root
+
+WorkingDirectory=/opt/nginx-log-analyzer
+EnvironmentFile=/etc/nginx-log-analyzer.conf
+
+ExecStart=/usr/bin/python3 /opt/nginx-log-analyzer/logviewer.py ${LOG_PATH} ${PORT}
+
 Restart=on-failure
 RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nginx-log-analyzer
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=${SERVICE_NAME}
